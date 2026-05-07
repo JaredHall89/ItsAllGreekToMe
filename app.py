@@ -610,6 +610,60 @@ def clear_cache():
     return jsonify({"cleared": n})
 
 
+@app.get("/api/lsj/status")
+def lsj_status():
+    """Diagnostic: report whether the LSJ index exists and how big it is."""
+    if not LSJ_DB_PATH.exists():
+        return jsonify({"available": False, "path": str(LSJ_DB_PATH)})
+    try:
+        conn = sqlite3.connect(LSJ_DB_PATH)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM lsj").fetchone()[0]
+            samples = [
+                row[0]
+                for row in conn.execute("SELECT lemma FROM lsj LIMIT 5").fetchall()
+            ]
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        return jsonify({"available": True, "error": str(e)})
+    return jsonify({
+        "available": True,
+        "path": str(LSJ_DB_PATH),
+        "entries": count,
+        "sample_lemmas": samples,
+        "size_kb": LSJ_DB_PATH.stat().st_size // 1024,
+    })
+
+
+@app.get("/api/lsj/probe")
+def lsj_probe():
+    """Diagnostic: look up a specific lemma in the index, plus a few variants."""
+    import unicodedata
+    raw = (request.args.get("lemma") or "").strip()
+    if not raw or not LSJ_DB_PATH.exists():
+        return jsonify({"error": "no lemma or no index"}), 400
+    norm = _normalize_lemma(raw)
+    nfd_no_marks = "".join(
+        c for c in unicodedata.normalize("NFD", norm) if not unicodedata.combining(c)
+    )
+    conn = sqlite3.connect(LSJ_DB_PATH)
+    try:
+        result = {}
+        for label, q in [("exact", raw), ("normalized", norm), ("no_diacritics", nfd_no_marks)]:
+            row = conn.execute("SELECT definition FROM lsj WHERE lemma=?", (q,)).fetchone()
+            result[label] = {"query": q, "found": bool(row), "def": row[0] if row else None}
+        # Prefix match for diagnosis
+        like = conn.execute(
+            "SELECT lemma FROM lsj WHERE lemma LIKE ? LIMIT 20",
+            (norm[:3] + "%",),
+        ).fetchall()
+        result["prefix_matches"] = [r[0] for r in like]
+        return jsonify(result)
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     init_db()
     app.run(host="127.0.0.1", port=5000, debug=True)
