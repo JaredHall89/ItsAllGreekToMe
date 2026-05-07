@@ -2,6 +2,8 @@ import io
 import os
 import re
 import sqlite3
+import time
+import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -13,9 +15,11 @@ DB_PATH = ROOT / "data" / "greek.db"
 DB_PATH.parent.mkdir(exist_ok=True)
 
 PERSEUS_MORPH = "https://www.perseus.tufts.edu/hopper/xmlmorph"
+LOOKUP_TTL = 60 * 60 * 24  # 24h
+LOOKUP_MAX_ENTRIES = 5000
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload cap
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 
 # ---------- database ----------
@@ -36,10 +40,20 @@ CREATE TABLE IF NOT EXISTS lines (
     original TEXT NOT NULL,
     translation TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
+    display_label TEXT NOT NULL DEFAULT '',
+    is_header INTEGER NOT NULL DEFAULT 0,
+    group_head INTEGER NOT NULL DEFAULT 0,
     UNIQUE(project_id, line_no)
 );
 CREATE INDEX IF NOT EXISTS idx_lines_project ON lines(project_id, line_no);
 """
+
+# Add-column migrations for old DBs.
+MIGRATIONS = [
+    "ALTER TABLE lines ADD COLUMN display_label TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE lines ADD COLUMN is_header INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE lines ADD COLUMN group_head INTEGER NOT NULL DEFAULT 0",
+]
 
 
 def db():
@@ -60,6 +74,11 @@ def close_db(_):
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
+    for stmt in MIGRATIONS:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     conn.close()
 
@@ -67,7 +86,7 @@ def init_db():
 # ---------- text ingestion ----------
 
 def extract_text_from_pdf(data: bytes, ocr: bool = False, ocr_lang: str = "grc") -> str:
-    import fitz  # PyMuPDF
+    import fitz
 
     doc = fitz.open(stream=data, filetype="pdf")
     pages = []
@@ -86,9 +105,28 @@ def extract_text_from_pdf(data: bytes, ocr: bool = False, ocr_lang: str = "grc")
     return "\n".join(pages)
 
 
-def split_into_lines(text: str) -> list[str]:
-    # Preserve non-empty lines, strip surrounding whitespace.
-    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+# Recognize "[Speaker]" markers and "<digits-or-letters>\t<text>" line labels
+# emitted by scripts/extract_tei.py.
+HEADER_RE = re.compile(r"^\[(.+)\]\s*$")
+LABELED_RE = re.compile(r"^([0-9]+[a-zA-Z]?)\t(.+)$")
+
+
+def parse_lines(text: str) -> list[dict]:
+    out = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = HEADER_RE.match(line)
+        if m:
+            out.append({"original": m.group(1).strip(), "display_label": "", "is_header": 1})
+            continue
+        m = LABELED_RE.match(line)
+        if m:
+            out.append({"original": m.group(2).strip(), "display_label": m.group(1), "is_header": 0})
+            continue
+        out.append({"original": line, "display_label": "", "is_header": 0})
+    return out
 
 
 # ---------- routes: pages ----------
@@ -128,8 +166,8 @@ def create_project():
     else:
         return jsonify({"error": "Provide a file or pasted text"}), 400
 
-    lines = split_into_lines(text)
-    if not lines:
+    parsed = parse_lines(text)
+    if not parsed:
         return jsonify({"error": "No text extracted (try OCR for scanned PDFs)"}), 400
 
     conn = db()
@@ -138,11 +176,18 @@ def create_project():
     )
     pid = cur.lastrowid
     conn.executemany(
-        "INSERT INTO lines(project_id, line_no, original) VALUES (?, ?, ?)",
-        [(pid, i + 1, ln) for i, ln in enumerate(lines)],
+        "INSERT INTO lines(project_id, line_no, original, display_label, is_header) VALUES (?, ?, ?, ?, ?)",
+        [(pid, i + 1, p["original"], p["display_label"], p["is_header"]) for i, p in enumerate(parsed)],
     )
     conn.commit()
-    return jsonify({"id": pid, "lines": len(lines)})
+    return jsonify({"id": pid, "lines": len(parsed)})
+
+
+def _line_to_dict(row):
+    d = dict(row)
+    if not d.get("group_head"):
+        d["group_head"] = d["line_no"]
+    return d
 
 
 @app.get("/api/projects/<int:pid>")
@@ -152,10 +197,11 @@ def get_project(pid):
     if not proj:
         return jsonify({"error": "not found"}), 404
     rows = conn.execute(
-        "SELECT line_no, original, translation, notes FROM lines WHERE project_id=? ORDER BY line_no",
+        "SELECT line_no, original, translation, notes, display_label, is_header, group_head "
+        "FROM lines WHERE project_id=? ORDER BY line_no",
         (pid,),
     ).fetchall()
-    return jsonify({"project": dict(proj), "lines": [dict(r) for r in rows]})
+    return jsonify({"project": dict(proj), "lines": [_line_to_dict(r) for r in rows]})
 
 
 @app.delete("/api/projects/<int:pid>")
@@ -181,8 +227,7 @@ def set_cursor(pid):
 @app.put("/api/projects/<int:pid>/lines/<int:line_no>")
 def update_line(pid, line_no):
     payload = request.json or {}
-    fields = []
-    values = []
+    fields, values = [], []
     for col in ("translation", "notes"):
         if col in payload:
             fields.append(f"{col}=?")
@@ -194,8 +239,63 @@ def update_line(pid, line_no):
     conn.execute(
         f"UPDATE lines SET {', '.join(fields)} WHERE project_id=? AND line_no=?", values
     )
+    conn.execute("UPDATE projects SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (pid,))
+    conn.commit()
+    return jsonify({"ok": True})
+
+
+def _prev_translatable_line(conn, pid, line_no):
+    """Return the highest line_no < given that is not a header."""
+    row = conn.execute(
+        "SELECT line_no FROM lines WHERE project_id=? AND line_no<? AND is_header=0 "
+        "ORDER BY line_no DESC LIMIT 1",
+        (pid, line_no),
+    ).fetchone()
+    return row["line_no"] if row else None
+
+
+@app.post("/api/projects/<int:pid>/lines/<int:line_no>/merge_up")
+def merge_up(pid, line_no):
+    conn = db()
+    cur = conn.execute(
+        "SELECT line_no, is_header, group_head, translation, notes FROM lines "
+        "WHERE project_id=? AND line_no=?",
+        (pid, line_no),
+    ).fetchone()
+    if not cur or cur["is_header"]:
+        return jsonify({"error": "cannot merge"}), 400
+    prev_no = _prev_translatable_line(conn, pid, line_no)
+    if prev_no is None:
+        return jsonify({"error": "no previous line"}), 400
+    prev = conn.execute(
+        "SELECT group_head FROM lines WHERE project_id=? AND line_no=?", (pid, prev_no)
+    ).fetchone()
+    head = prev["group_head"] or prev_no
+    # Move any text from this line into the head's translation/notes.
+    if cur["translation"] or cur["notes"]:
+        head_row = conn.execute(
+            "SELECT translation, notes FROM lines WHERE project_id=? AND line_no=?",
+            (pid, head),
+        ).fetchone()
+        new_t = (head_row["translation"] + ("\n" if head_row["translation"] and cur["translation"] else "") + cur["translation"]).strip("\n")
+        new_n = (head_row["notes"] + ("\n" if head_row["notes"] and cur["notes"] else "") + cur["notes"]).strip("\n")
+        conn.execute(
+            "UPDATE lines SET translation=?, notes=? WHERE project_id=? AND line_no=?",
+            (new_t, new_n, pid, head),
+        )
     conn.execute(
-        "UPDATE projects SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (pid,)
+        "UPDATE lines SET group_head=?, translation='', notes='' WHERE project_id=? AND line_no=?",
+        (head, pid, line_no),
+    )
+    conn.commit()
+    return jsonify({"ok": True, "group_head": head})
+
+
+@app.post("/api/projects/<int:pid>/lines/<int:line_no>/split")
+def split_line(pid, line_no):
+    conn = db()
+    conn.execute(
+        "UPDATE lines SET group_head=0 WHERE project_id=? AND line_no=?", (pid, line_no)
     )
     conn.commit()
     return jsonify({"ok": True})
@@ -208,39 +308,54 @@ def export_project(pid):
     if not proj:
         return jsonify({"error": "not found"}), 404
     rows = conn.execute(
-        "SELECT line_no, original, translation, notes FROM lines WHERE project_id=? ORDER BY line_no",
+        "SELECT line_no, original, translation, notes, display_label, is_header, group_head "
+        "FROM lines WHERE project_id=? ORDER BY line_no",
         (pid,),
     ).fetchall()
-    return jsonify({"project": dict(proj), "lines": [dict(r) for r in rows]})
+    return jsonify({"project": dict(proj), "lines": [_line_to_dict(r) for r in rows]})
 
 
-# ---------- routes: dictionary ----------
+# ---------- dictionary ----------
 
-# Strip combining diacritics for normalization fallbacks.
-COMBINING = re.compile(r"[̀-ͯ҃-҉᷀-᷿]")
+_lookup_cache: dict[str, tuple[float, dict]] = {}
+_cache_lock = threading.Lock()
+
+
+def _cache_get(word: str):
+    with _cache_lock:
+        entry = _lookup_cache.get(word)
+        if not entry:
+            return None
+        ts, data = entry
+        if time.monotonic() - ts > LOOKUP_TTL:
+            _lookup_cache.pop(word, None)
+            return None
+        return data
+
+
+def _cache_put(word: str, data: dict):
+    with _cache_lock:
+        if len(_lookup_cache) >= LOOKUP_MAX_ENTRIES:
+            # Evict the oldest 10% to keep this O(N) only occasionally.
+            victims = sorted(_lookup_cache.items(), key=lambda kv: kv[1][0])[: LOOKUP_MAX_ENTRIES // 10]
+            for k, _ in victims:
+                _lookup_cache.pop(k, None)
+        _lookup_cache[word] = (time.monotonic(), data)
 
 
 def strip_punct(word: str) -> str:
-    # Remove leading/trailing punctuation but keep Greek letters and combining marks.
     return re.sub(r"^[^\wͰ-Ͽἀ-῿]+|[^\wͰ-Ͽἀ-῿]+$", "", word)
 
 
-@app.get("/api/lookup")
-def lookup():
-    raw = (request.args.get("word") or "").strip()
-    if not raw:
-        return jsonify({"error": "empty"}), 400
-    word = strip_punct(raw)
+def fetch_morpheus(word: str) -> dict:
     try:
         r = requests.get(
-            PERSEUS_MORPH,
-            params={"lang": "greek", "lookup": word},
-            timeout=10,
+            PERSEUS_MORPH, params={"lang": "greek", "lookup": word}, timeout=10
         )
         r.raise_for_status()
     except requests.RequestException as e:
-        return jsonify({"word": word, "error": f"Perseus unreachable: {e}", "analyses": []})
-
+        return {"word": word, "error": f"Perseus unreachable: {e}", "analyses": [], "lemmas": [],
+                "links": _links(word), "lemma_links": []}
     analyses = []
     try:
         root = ET.fromstring(r.text)
@@ -249,16 +364,12 @@ def lookup():
             analyses.append(entry)
     except ET.ParseError:
         pass
-
     lemmas = sorted({a.get("lemma", "") for a in analyses if a.get("lemma")})
-    return jsonify({
+    return {
         "word": word,
         "analyses": analyses,
         "lemmas": lemmas,
-        "links": {
-            "logeion": f"https://logeion.uchicago.edu/{word}",
-            "perseus": f"https://www.perseus.tufts.edu/hopper/morph?l={word}&la=greek",
-        },
+        "links": _links(word),
         "lemma_links": [
             {
                 "lemma": l,
@@ -267,7 +378,37 @@ def lookup():
             }
             for l in lemmas
         ],
-    })
+    }
+
+
+def _links(word: str) -> dict:
+    return {
+        "logeion": f"https://logeion.uchicago.edu/{word}",
+        "perseus": f"https://www.perseus.tufts.edu/hopper/morph?l={word}&la=greek",
+    }
+
+
+@app.get("/api/lookup")
+def lookup():
+    raw = (request.args.get("word") or "").strip()
+    if not raw:
+        return jsonify({"error": "empty"}), 400
+    word = strip_punct(raw)
+    cached = _cache_get(word)
+    if cached is not None:
+        return jsonify({**cached, "cached": True})
+    data = fetch_morpheus(word)
+    if not data.get("error"):
+        _cache_put(word, data)
+    return jsonify({**data, "cached": False})
+
+
+@app.post("/api/lookup/cache/clear")
+def clear_cache():
+    with _cache_lock:
+        n = len(_lookup_cache)
+        _lookup_cache.clear()
+    return jsonify({"cleared": n})
 
 
 if __name__ == "__main__":

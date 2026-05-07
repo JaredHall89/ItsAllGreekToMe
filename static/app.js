@@ -38,17 +38,46 @@ async function loadProjectList() {
 async function loadProject(id) {
   if (!id) { currentProject = null; renderAll(); return; }
   currentProject = await api(`/api/projects/${id}`);
-  currentLineNo = currentProject.project.current_line || 1;
+  currentLineNo = currentProject.project.current_line || firstTranslatableLine() || 1;
   renderAll();
-  const el = document.querySelector(`.line[data-line="${currentLineNo}"]`);
-  if (el) el.scrollIntoView({ block: "center" });
-  const tel = document.querySelector(`.tline[data-line="${currentLineNo}"]`);
-  if (tel) tel.scrollIntoView({ block: "center" });
+  scrollToLine(currentLineNo);
+}
+
+function firstTranslatableLine() {
+  return currentProject?.lines.find(l => !l.is_header)?.line_no;
+}
+
+function lineByNo(n) { return currentProject?.lines.find(l => l.line_no === n); }
+
+function scrollToLine(n) {
+  document.querySelector(`.line[data-line="${n}"]`)?.scrollIntoView({ block: "center" });
+  document.querySelector(`.tline[data-line="${n}"]`)?.scrollIntoView({ block: "center" });
 }
 
 function renderAll() {
   renderOriginal();
   renderTranslation();
+}
+
+function isGroupHead(ln) {
+  if (ln.is_header) return false;
+  return (ln.group_head || ln.line_no) === ln.line_no;
+}
+
+function groupMembers(headNo) {
+  // Lines in group: head itself + any subsequent line (until next non-header head)
+  // whose group_head === headNo.
+  const lines = currentProject.lines;
+  const headIdx = lines.findIndex(l => l.line_no === headNo);
+  if (headIdx < 0) return [];
+  const out = [lines[headIdx]];
+  for (let i = headIdx + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.is_header) continue;
+    if ((l.group_head || l.line_no) === headNo) out.push(l);
+    else break;
+  }
+  return out;
 }
 
 function renderOriginal() {
@@ -57,13 +86,26 @@ function renderOriginal() {
   if (!currentProject) return;
   for (const ln of currentProject.lines) {
     const div = document.createElement("div");
-    div.className = "line" + (ln.line_no === currentLineNo ? " current" : "");
     div.dataset.line = ln.line_no;
+    if (ln.is_header) {
+      div.className = "line header";
+      const num = document.createElement("span");
+      num.className = "lineno";
+      const text = document.createElement("span");
+      text.className = "text";
+      text.textContent = ln.original;
+      div.appendChild(num);
+      div.appendChild(text);
+      root.appendChild(div);
+      continue;
+    }
+    const grouped = !isGroupHead(ln);
+    div.className = "line" + (ln.line_no === currentLineNo ? " current" : "") + (grouped ? " grouped" : "");
     const num = document.createElement("span");
-    num.className = "lineno"; num.textContent = ln.line_no;
+    num.className = "lineno";
+    num.textContent = ln.display_label || ln.line_no;
     const text = document.createElement("span");
     text.className = "text";
-    // Split on whitespace, wrap each word so we can click it.
     for (const tok of ln.original.split(/(\s+)/)) {
       if (/^\s+$/.test(tok)) {
         text.appendChild(document.createTextNode(tok));
@@ -90,19 +132,49 @@ function renderTranslation() {
   const root = $("#translation-lines");
   root.innerHTML = "";
   if (!currentProject) return;
+
   for (const ln of currentProject.lines) {
+    if (ln.is_header) {
+      const h = document.createElement("div");
+      h.className = "tline spacer";
+      const div = document.createElement("div");
+      div.className = "header-divider";
+      div.textContent = ln.original;
+      h.appendChild(div);
+      root.appendChild(h);
+      continue;
+    }
+    if (!isGroupHead(ln)) continue;  // non-head members are folded into the head
+
+    const members = groupMembers(ln.line_no);
     const div = document.createElement("div");
-    div.className = "tline" + (ln.line_no === currentLineNo ? " current" : "");
+    div.className = "tline" + (members.some(m => m.line_no === currentLineNo) ? " current" : "");
     div.dataset.line = ln.line_no;
+
     const num = document.createElement("span");
-    num.className = "lineno"; num.textContent = ln.line_no;
+    num.className = "lineno";
+    if (members.length === 1) {
+      num.textContent = ln.display_label || ln.line_no;
+    } else {
+      const first = members[0].display_label || members[0].line_no;
+      const last = members[members.length - 1].display_label || members[members.length - 1].line_no;
+      num.textContent = `${first}–${last}`;
+    }
 
     const editor = document.createElement("div");
     editor.className = "editor";
+
+    if (members.length > 1) {
+      const src = document.createElement("div");
+      src.className = "grouped-source";
+      src.textContent = members.map(m => m.original).join("  /  ");
+      editor.appendChild(src);
+    }
+
     const ta = document.createElement("textarea");
     ta.value = ln.translation || "";
     ta.placeholder = "translation…";
-    ta.rows = 1;
+    ta.rows = Math.max(1, members.length);
     ta.addEventListener("input", () => scheduleSave(ln.line_no, "translation", ta.value));
     ta.addEventListener("focus", () => setCurrentLine(ln.line_no));
 
@@ -114,12 +186,55 @@ function renderTranslation() {
     notes.addEventListener("input", () => scheduleSave(ln.line_no, "notes", notes.value));
     notes.addEventListener("focus", () => setCurrentLine(ln.line_no));
 
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const mergeBtn = document.createElement("button");
+    mergeBtn.type = "button";
+    mergeBtn.textContent = "↑ merge with previous";
+    mergeBtn.title = "Merge this group into the previous translation group";
+    mergeBtn.addEventListener("click", () => mergeUp(ln.line_no));
+    actions.appendChild(mergeBtn);
+
+    if (members.length > 1) {
+      const splitBtn = document.createElement("button");
+      splitBtn.type = "button";
+      splitBtn.textContent = "split group";
+      splitBtn.title = "Restore each member as its own line";
+      splitBtn.addEventListener("click", () => splitGroup(ln.line_no));
+      actions.appendChild(splitBtn);
+    }
+
     editor.appendChild(ta);
     editor.appendChild(notes);
+    editor.appendChild(actions);
     div.appendChild(num);
     div.appendChild(editor);
     root.appendChild(div);
   }
+}
+
+async function mergeUp(line_no) {
+  try {
+    await api(`/api/projects/${currentProject.project.id}/lines/${line_no}/merge_up`, { method: "POST" });
+    await reloadProject();
+    setStatus("Merged");
+  } catch (e) { setStatus("Merge failed: " + e.message, 4000); }
+}
+
+async function splitGroup(headNo) {
+  // Split: reset every member except the head back to self.
+  const members = groupMembers(headNo);
+  for (const m of members.slice(1)) {
+    await api(`/api/projects/${currentProject.project.id}/lines/${m.line_no}/split`, { method: "POST" });
+  }
+  await reloadProject();
+  setStatus("Split");
+}
+
+async function reloadProject() {
+  const id = currentProject.project.id;
+  currentProject = await api(`/api/projects/${id}`);
+  renderAll();
 }
 
 function setCurrentLine(line_no) {
@@ -128,11 +243,13 @@ function setCurrentLine(line_no) {
   for (const el of document.querySelectorAll(".line.current, .tline.current")) {
     el.classList.remove("current");
   }
-  for (const el of document.querySelectorAll(`[data-line="${line_no}"]`)) {
-    el.classList.add("current");
+  const ln = lineByNo(line_no);
+  document.querySelector(`.line[data-line="${line_no}"]`)?.classList.add("current");
+  if (ln) {
+    const head = ln.is_header ? line_no : (ln.group_head || ln.line_no);
+    document.querySelector(`.tline[data-line="${head}"]`)?.classList.add("current");
   }
   if (!currentProject) return;
-  // Persist cursor (debounced).
   clearTimeout(setCurrentLine._t);
   setCurrentLine._t = setTimeout(() => {
     api(`/api/projects/${currentProject.project.id}/cursor`, {
@@ -153,8 +270,7 @@ function scheduleSave(line_no, field, value) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ [field]: value }),
       });
-      // update in-memory
-      const ln = currentProject.lines.find(l => l.line_no === line_no);
+      const ln = lineByNo(line_no);
       if (ln) ln[field] = value;
       setStatus("Saved");
     } catch (e) { setStatus("Save failed: " + e.message, 4000); }
@@ -178,7 +294,7 @@ async function lookupWord(word) {
 function renderLookup(data) {
   const out = $("#lookup-results");
   let html = `<div class="lookup-header">
-    <b>${escapeHtml(data.word)}</b> &mdash;
+    <b>${escapeHtml(data.word)}</b>${data.cached ? '<span class="badge">cached</span>' : ''} &mdash;
     <a href="${data.links.logeion}" target="_blank">Logeion</a>
     <a href="${data.links.perseus}" target="_blank">Perseus morph</a>
   </div>`;
@@ -186,7 +302,6 @@ function renderLookup(data) {
   if (!data.analyses?.length) {
     html += `<div class="error">No morphological analyses returned. Try Logeion (link above) for the headword.</div>`;
   } else {
-    // group by lemma
     const byLemma = {};
     for (const a of data.analyses) {
       const k = a.lemma || "?";
@@ -212,6 +327,70 @@ function renderLookup(data) {
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+// ---------- polytonic keyboard ----------
+
+const KB_LETTERS = [
+  "α β γ δ ε ζ η θ ι κ λ μ ν ξ ο π ρ σ ς τ υ φ χ ψ ω".split(" "),
+  // common precomposed vowels with breathings/accents — covers ~90% of Attic forms
+  "ἀ ἁ ά ὰ ᾶ ἂ ἃ ἄ ἅ ἆ ἇ ᾳ".split(" "),
+  "ἐ ἑ έ ὲ ἒ ἓ ἔ ἕ".split(" "),
+  "ἠ ἡ ή ὴ ῆ ἢ ἣ ἤ ἥ ἦ ἧ ῃ".split(" "),
+  "ἰ ἱ ί ὶ ῖ ἲ ἳ ἴ ἵ ἶ ἷ ϊ".split(" "),
+  "ὀ ὁ ό ὸ ὂ ὃ ὄ ὅ".split(" "),
+  "ὐ ὑ ύ ὺ ῦ ὒ ὓ ὔ ὕ ὖ ὗ ϋ".split(" "),
+  "ὠ ὡ ώ ὼ ῶ ὢ ὣ ὤ ὥ ὦ ὧ ῳ".split(" "),
+];
+
+function buildKeyboard() {
+  const kb = $("#polytonic-kb");
+  const input = $("#lookup-input");
+
+  function insert(text) {
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    input.value = input.value.slice(0, start) + text + input.value.slice(end);
+    const pos = start + text.length;
+    input.setSelectionRange(pos, pos);
+    input.focus();
+  }
+
+  for (const row of KB_LETTERS) {
+    const r = document.createElement("div");
+    r.className = "kb-row";
+    for (const ch of row) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = ch;
+      b.addEventListener("click", () => insert(ch));
+      r.appendChild(b);
+    }
+    kb.appendChild(r);
+  }
+
+  const r = document.createElement("div");
+  r.className = "kb-row";
+  for (const [label, action] of [
+    ["space", () => insert(" ")],
+    ["⌫", () => {
+      const s = input.selectionStart ?? input.value.length;
+      const e = input.selectionEnd ?? input.value.length;
+      if (s !== e) { insert(""); return; }
+      if (s === 0) return;
+      input.value = input.value.slice(0, s - 1) + input.value.slice(e);
+      input.setSelectionRange(s - 1, s - 1);
+      input.focus();
+    }],
+    ["clear", () => { input.value = ""; input.focus(); }],
+    ["look up", () => $("#lookup-form").requestSubmit()],
+  ]) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "kb-action"; b.textContent = label;
+    b.addEventListener("click", action);
+    r.appendChild(b);
+  }
+  kb.appendChild(r);
 }
 
 // ---------- new project dialog ----------
@@ -264,23 +443,31 @@ $("#lookup-form").addEventListener("submit", (e) => {
   if (w) lookupWord(w);
 });
 
-// keyboard: arrow keys move current line when focus is outside textarea
 document.addEventListener("keydown", (e) => {
   if (!currentProject) return;
   if (["TEXTAREA", "INPUT"].includes(document.activeElement.tagName)) return;
   if (e.key === "ArrowDown" || e.key === "j") {
-    const next = currentLineNo + 1;
-    if (currentProject.lines.find(l => l.line_no === next)) {
-      setCurrentLine(next);
-      document.querySelector(`.line[data-line="${next}"]`)?.scrollIntoView({ block: "nearest" });
+    const lines = currentProject.lines;
+    const idx = lines.findIndex(l => l.line_no === currentLineNo);
+    for (let i = idx + 1; i < lines.length; i++) {
+      if (!lines[i].is_header) {
+        setCurrentLine(lines[i].line_no);
+        scrollToLine(lines[i].line_no);
+        break;
+      }
     }
   } else if (e.key === "ArrowUp" || e.key === "k") {
-    const prev = currentLineNo - 1;
-    if (prev >= 1) {
-      setCurrentLine(prev);
-      document.querySelector(`.line[data-line="${prev}"]`)?.scrollIntoView({ block: "nearest" });
+    const lines = currentProject.lines;
+    const idx = lines.findIndex(l => l.line_no === currentLineNo);
+    for (let i = idx - 1; i >= 0; i--) {
+      if (!lines[i].is_header) {
+        setCurrentLine(lines[i].line_no);
+        scrollToLine(lines[i].line_no);
+        break;
+      }
     }
   }
 });
 
+buildKeyboard();
 loadProjectList();

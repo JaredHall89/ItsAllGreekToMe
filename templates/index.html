@@ -26,14 +26,15 @@
   <section class="pane" id="pane-dict">
     <h2>Dictionary</h2>
     <form id="lookup-form">
-      <input type="text" id="lookup-input" placeholder="Greek word (Unicode or beta code)" autocomplete="off">
+      <input type="text" id="lookup-input" placeholder="Greek word (Unicode)" autocomplete="off">
       <button type="submit">Look up</button>
     </form>
+    <div id="polytonic-kb" class="kb"></div>
     <div id="lookup-results" class="scroll"></div>
   </section>
 
   <section class="pane" id="pane-translation">
-    <h2>Translation</h2>
+    <h2>Translation <span class="hint">(↑ merge / split groups)</span></h2>
     <div id="translation-lines" class="scroll"></div>
   </section>
 </main>
@@ -48,8 +49,9 @@
     <label><input type="checkbox" name="ocr" value="1"> Force OCR (for scanned PDFs; requires tesseract + grc)</label>
     <details>
       <summary>…or paste text directly</summary>
-      <textarea name="pasted_text" rows="8" placeholder="Paste UTF-8 Greek text, one line per verse"></textarea>
+      <textarea name="pasted_text" rows="8" placeholder="Paste UTF-8 Greek text"></textarea>
     </details>
+    <p class="hint">Importer recognizes <code>[Speaker]</code> markers and <code>N&lt;tab&gt;text</code> labeled lines (the format produced by <code>scripts/extract_tei.py</code>).</p>
     <menu>
       <button value="cancel">Cancel</button>
       <button id="create-btn" value="create">Create</button>
