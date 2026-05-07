@@ -13,9 +13,15 @@ import re
 import sqlite3
 import sys
 import unicodedata
-import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+try:
+    import requests
+except ImportError:
+    print("ERROR: this script requires the 'requests' package. Run:")
+    print("  pip install -r requirements.txt")
+    sys.exit(1)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -172,19 +178,34 @@ def iter_entries(xml_path: Path):
 
 # ---------------------- pipeline ----------------------
 
+MIN_VALID_BYTES = 100_000  # any LSJ shard is much larger; smaller means a stub/error page
+
+
 def download(n: int) -> Path:
     dst = TMP_DIR / f"eng{n}.xml"
-    if dst.exists() and dst.stat().st_size > 1000:
+    if dst.exists() and dst.stat().st_size >= MIN_VALID_BYTES:
+        print(f"  cached {dst.name} ({dst.stat().st_size // 1024} KB)")
         return dst
+    if dst.exists():
+        # Stale partial: drop it.
+        dst.unlink()
     url = BASE_URL.format(n=n)
     print(f"  fetching {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": "ItsAllGreekToMe-LSJ-builder"})
-    with urllib.request.urlopen(req, timeout=120) as r, open(dst, "wb") as f:
-        while True:
-            chunk = r.read(1 << 16)
-            if not chunk:
-                break
-            f.write(chunk)
+    with requests.get(url, stream=True, timeout=120,
+                      headers={"User-Agent": "ItsAllGreekToMe-LSJ-builder"}) as r:
+        r.raise_for_status()
+        size = 0
+        with open(dst, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1 << 16):
+                if chunk:
+                    f.write(chunk)
+                    size += len(chunk)
+    if size < MIN_VALID_BYTES:
+        raise RuntimeError(
+            f"downloaded {size} bytes, expected at least {MIN_VALID_BYTES} "
+            f"(GitHub may have served an error page)"
+        )
+    print(f"  saved {dst.name} ({size // 1024} KB)")
     return dst
 
 
@@ -225,6 +246,13 @@ def build():
     rows = conn.execute("SELECT COUNT(*) FROM lsj").fetchone()[0]
     conn.close()
     print(f"\nDone. Inserted {total} entries; {rows} unique lemmas in {DB_PATH}.")
+    if rows == 0:
+        print("\nWARNING: index is EMPTY. Likely causes:")
+        print("  1. Downloads failed (re-run and watch for 'WARN: file N failed').")
+        print("  2. macOS Python SSL: run /Applications/Python\\ 3.x/Install\\ Certificates.command")
+        print("  3. Network blocked github.com or raw.githubusercontent.com.")
+        print(f"  Inspect {TMP_DIR} for downloaded shards.")
+        sys.exit(2)
     if "--clean" in sys.argv:
         for f in TMP_DIR.iterdir():
             f.unlink()
