@@ -66,6 +66,13 @@ def beta_to_unicode(s: str) -> str:
         c = s[i]
         if c == "*":
             i += 1
+            # LSJ encodes capitals with breathings/accents as either
+            # "*)A" (diacritics before the letter) or "*A)" (after it).
+            # Both styles appear; collect from both sides.
+            pre_mods = ""
+            while i < len(s) and s[i] in DIACRITICS:
+                pre_mods += s[i]
+                i += 1
             if i >= len(s):
                 break
             base_letter = s[i].lower()
@@ -75,11 +82,11 @@ def beta_to_unicode(s: str) -> str:
                 i += 1
                 continue
             i += 1
-            # Diacritics may precede or follow the letter for capitals.
-            mods = ""
+            post_mods = ""
             while i < len(s) and s[i] in DIACRITICS:
-                mods += s[i]
+                post_mods += s[i]
                 i += 1
+            mods = pre_mods + post_mods
             out.append(base.upper() + "".join(DIACRITICS[m] for m in mods))
             continue
         base = BETA_LETTERS.get(c.lower())
