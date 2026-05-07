@@ -16,7 +16,7 @@ DB_PATH.parent.mkdir(exist_ok=True)
 
 PERSEIDS_MORPH = "https://services.perseids.org/bsp/morphologyservice/analysis/word"
 PERSEUS_MORPH_FALLBACK = "https://www.perseus.tufts.edu/hopper/xmlmorph"
-WIKTIONARY_DEF = "https://en.wiktionary.org/api/rest_v1/page/definition/{lemma}"
+WIKTIONARY_API = "https://en.wiktionary.org/w/api.php"
 LOOKUP_TTL = 60 * 60 * 24  # 24h
 LOOKUP_MAX_ENTRIES = 5000
 USER_AGENT = "ItsAllGreekToMe/0.1 (greek translation workbench)"
@@ -428,13 +428,75 @@ def fetch_perseus_xmlmorph(word: str) -> list[dict]:
     return out
 
 
+def _strip_wikitext(s: str) -> str:
+    """Render a wikitext fragment as plain text. Handles links, italics,
+    bold, and the common label/qualifier templates used in Wiktionary
+    definitions. Other templates are dropped."""
+    # [[target|label]] -> label; [[target]] -> target
+    s = re.sub(r"\[\[([^\]\|]+)\|([^\]]+)\]\]", r"\2", s)
+    s = re.sub(r"\[\[([^\]]+)\]\]", r"\1", s)
+
+    # Common gloss/label templates: {{lb|grc|usage|note}} -> "(usage, note)";
+    # {{gl|...}} or {{gloss|...}} -> "(...)"; {{q|...}} -> "(...)".
+    def _label(m):
+        parts = [p for p in m.group(1).split("|")[1:] if p and "=" not in p]
+        return f"({', '.join(parts)})" if parts else ""
+    s = re.sub(r"\{\{(?:lb|label|qualifier|q|i|gl|gloss)\|([^}]+)\}\}", _label, s)
+
+    # {{l|grc|word}} or {{m|grc|word}} -> word
+    s = re.sub(r"\{\{(?:l|m|mention|link)\|[^|}]+\|([^|}]+)(?:\|[^}]*)?\}\}", r"\1", s)
+
+    # Drop any remaining templates entirely.
+    prev = None
+    while prev != s:
+        prev = s
+        s = re.sub(r"\{\{[^{}]*\}\}", "", s)
+
+    s = re.sub(r"'''([^']+)'''", r"\1", s)
+    s = re.sub(r"''([^']+)''", r"\1", s)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _extract_grc_definitions(wikitext: str) -> list[str]:
+    """Pull '# ...' definition lines from the ==Ancient Greek== section."""
+    lines = wikitext.splitlines()
+    in_grc = False
+    out: list[str] = []
+    for line in lines:
+        m = re.match(r"^==\s*([^=]+?)\s*==\s*$", line)
+        if m:
+            in_grc = m.group(1).strip().lower() == "ancient greek"
+            continue
+        if not in_grc:
+            continue
+        # Definition lines: "# foo" but not "#:" (citations) or "#*" (quotes).
+        if re.match(r"^#[^:*#]", line):
+            text = _strip_wikitext(line[1:].strip())
+            if text:
+                out.append(text)
+                if len(out) >= 5:
+                    return out
+    return out
+
+
 def fetch_definitions(lemma: str) -> list[str]:
-    """Wiktionary REST: short English glosses for an Ancient Greek lemma."""
+    """Fetch the wikitext of the Wiktionary page for `lemma` and extract
+    English definitions from its Ancient Greek section."""
     if not lemma:
         return []
     try:
         r = requests.get(
-            WIKTIONARY_DEF.format(lemma=lemma),
+            WIKTIONARY_API,
+            params={
+                "action": "parse",
+                "page": lemma,
+                "prop": "wikitext",
+                "format": "json",
+                "redirects": "1",
+                "formatversion": "2",
+            },
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
             timeout=10,
         )
@@ -444,17 +506,10 @@ def fetch_definitions(lemma: str) -> list[str]:
     except (requests.RequestException, ValueError):
         return []
 
-    # Wiktionary keys language sections by language code or full name.
-    sections = data.get("grc") or data.get("Ancient Greek") or []
-    out = []
-    for sense in sections:
-        for d in sense.get("definitions", []):
-            txt = re.sub(r"<[^>]+>", "", d.get("definition", "")).strip()
-            if txt:
-                out.append(txt)
-            if len(out) >= 4:
-                return out
-    return out
+    wikitext = data.get("parse", {}).get("wikitext", "")
+    if not wikitext:
+        return []
+    return _extract_grc_definitions(wikitext)
 
 
 def fetch_lookup(word: str) -> dict:
