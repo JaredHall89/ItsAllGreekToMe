@@ -302,6 +302,9 @@ function renderLookup(data) {
   if (data.errors?.length) {
     html += `<div class="error">${data.errors.map(escapeHtml).join("<br>")}</div>`;
   }
+  if (!data.lsj_available) {
+    html += `<div class="lsj-hint">Tip: run <code>python scripts/build_lsj.py</code> once to bundle the full Liddell-Scott-Jones lexicon for offline definitions.</div>`;
+  }
   if (!data.analyses?.length) {
     html += `<div class="error">No morphological analyses returned. Try Logeion or Wiktionary (links above) for the headword. If many lookups are failing, the upstream service may be down.</div>`;
   } else {
@@ -313,15 +316,20 @@ function renderLookup(data) {
     for (const [lemma, list] of Object.entries(byLemma)) {
       const lemmaLink = data.lemma_links.find(l => l.lemma === lemma);
       const defs = data.definitions?.[lemma] || [];
+      const lsj = data.lsj?.[lemma] || "";
       html += `<div class="analysis">
         <div class="lemma">${escapeHtml(lemma)}
           ${lemmaLink ? `<a href="${lemmaLink.wiktionary}" target="_blank" class="lemma-link">Wikt ↗</a>
           <a href="${lemmaLink.logeion}" target="_blank" class="lemma-link">Logeion ↗</a>
           <a href="${lemmaLink.perseus}" target="_blank" class="lemma-link">LSJ ↗</a>` : ""}
         </div>`;
+      if (lsj) {
+        html += `<div class="lsj-def"><span class="src-tag">LSJ</span> ${escapeHtml(lsj)}</div>`;
+      }
       if (defs.length) {
-        html += `<ol class="defs">${defs.map(d => `<li>${escapeHtml(d)}</li>`).join("")}</ol>`;
-      } else {
+        html += `<div class="wikt-defs"><span class="src-tag">Wiktionary</span><ol class="defs">${defs.map(d => `<li>${escapeHtml(d)}</li>`).join("")}</ol></div>`;
+      }
+      if (!lsj && !defs.length) {
         html += `<div class="no-def">No short definition available — see external links above.</div>`;
       }
       for (const a of list) {

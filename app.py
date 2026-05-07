@@ -17,6 +17,7 @@ DB_PATH.parent.mkdir(exist_ok=True)
 PERSEIDS_MORPH = "https://services.perseids.org/bsp/morphologyservice/analysis/word"
 PERSEUS_MORPH_FALLBACK = "https://www.perseus.tufts.edu/hopper/xmlmorph"
 WIKTIONARY_API = "https://en.wiktionary.org/w/api.php"
+LSJ_DB_PATH = ROOT / "data" / "lsj.sqlite"
 LOOKUP_TTL = 60 * 60 * 24  # 24h
 LOOKUP_MAX_ENTRIES = 5000
 USER_AGENT = "ItsAllGreekToMe/0.1 (greek translation workbench)"
@@ -512,6 +513,31 @@ def fetch_definitions(lemma: str) -> list[str]:
     return _extract_grc_definitions(wikitext)
 
 
+def _normalize_lemma(s: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFC", s or "")
+    s = re.sub(r"\d+$", "", s)
+    return s.replace("-", "").replace("_", "")
+
+
+def fetch_lsj(lemma: str) -> str:
+    """Look up an LSJ short definition from the local index, if built."""
+    if not lemma or not LSJ_DB_PATH.exists():
+        return ""
+    try:
+        conn = sqlite3.connect(LSJ_DB_PATH)
+        try:
+            row = conn.execute(
+                "SELECT definition FROM lsj WHERE lemma = ?",
+                (_normalize_lemma(lemma),),
+            ).fetchone()
+            return row[0] if row else ""
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return ""
+
+
 def fetch_lookup(word: str) -> dict:
     errors = []
     analyses = []
@@ -527,12 +553,15 @@ def fetch_lookup(word: str) -> dict:
             errors.append(f"Perseus fallback: {e}")
 
     lemmas = sorted({a.get("lemma", "") for a in analyses if a.get("lemma")})
+    lsj = {l: fetch_lsj(l) for l in lemmas}
     definitions = {l: fetch_definitions(l) for l in lemmas}
 
     return {
         "word": word,
         "analyses": analyses,
         "lemmas": lemmas,
+        "lsj": lsj,
+        "lsj_available": LSJ_DB_PATH.exists(),
         "definitions": definitions,
         "errors": errors,
         "links": _links(word),

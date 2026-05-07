@@ -81,9 +81,14 @@ header h1 { margin: 0; font-size: 18px; font-weight: 600; }
 .analysis .lemma { font-size: 18px; font-weight: 600; font-family: "GFS Didot", "Times New Roman", serif; }
 .analysis .lemma .lemma-link { font-size: 12px; font-weight: normal; margin-left: 6px; color: #0366d6; font-family: -apple-system, sans-serif; }
 .analysis .grammar { color: #555; font-size: 13px; margin-top: 2px; }
-.analysis .defs { margin: 6px 0 6px 20px; padding: 0; font-size: 14px; color: #222; }
+.analysis .defs { margin: 4px 0 4px 20px; padding: 0; font-size: 14px; color: #222; }
 .analysis .defs li { margin: 2px 0; }
 .analysis .no-def { color: #999; font-size: 12px; margin: 4px 0; font-style: italic; }
+.analysis .lsj-def { background: #fffbe6; border-left: 3px solid #e0a800; padding: 6px 8px; margin: 6px 0; font-size: 14px; line-height: 1.5; }
+.analysis .wikt-defs { margin-top: 6px; }
+.src-tag { display: inline-block; font-size: 10px; font-weight: 700; color: #888; background: #eee; padding: 1px 5px; border-radius: 3px; margin-right: 6px; vertical-align: middle; letter-spacing: 0.06em; text-transform: uppercase; }
+.lsj-hint { font-size: 12px; color: #555; background: #eef5ff; border: 1px solid #cfe2ff; padding: 6px 10px; border-radius: 4px; margin-bottom: 8px; }
+.lsj-hint code { background: #fff; padding: 1px 4px; border-radius: 3px; }
 .lookup-header { margin-bottom: 8px; font-size: 13px; color: #666; }
 .lookup-header a { color: #0366d6; margin-right: 8px; }
 .lookup-header .badge { background: #d4edda; color: #155724; padding: 1px 6px; border-radius: 8px; font-size: 11px; margin-left: 6px; }
