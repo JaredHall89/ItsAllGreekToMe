@@ -14,9 +14,12 @@ ROOT = Path(__file__).parent
 DB_PATH = ROOT / "data" / "greek.db"
 DB_PATH.parent.mkdir(exist_ok=True)
 
-PERSEUS_MORPH = "https://www.perseus.tufts.edu/hopper/xmlmorph"
+PERSEIDS_MORPH = "https://services.perseids.org/bsp/morphologyservice/analysis/word"
+PERSEUS_MORPH_FALLBACK = "https://www.perseus.tufts.edu/hopper/xmlmorph"
+WIKTIONARY_DEF = "https://en.wiktionary.org/api/rest_v1/page/definition/{lemma}"
 LOOKUP_TTL = 60 * 60 * 24  # 24h
 LOOKUP_MAX_ENTRIES = 5000
+USER_AGENT = "ItsAllGreekToMe/0.1 (greek translation workbench)"
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
@@ -343,38 +346,147 @@ def _cache_put(word: str, data: dict):
         _lookup_cache[word] = (time.monotonic(), data)
 
 
+# Strip Greek elision marks (U+02BC modifier letter apostrophe, U+2019 right
+# single quote, U+1FBD koronis) and surrounding punctuation. \w matches U+02BC
+# (it's category Lm), so we list it explicitly.
+_ELISION = "ʼ’᾽'"
+_PUNCT_BOUNDARY = re.compile(rf"^[^\wͰ-Ͽἀ-῿]+|[{_ELISION}]+$|[^\wͰ-Ͽἀ-῿]+$")
+
+
 def strip_punct(word: str) -> str:
-    return re.sub(r"^[^\wͰ-Ͽἀ-῿]+|[^\wͰ-Ͽἀ-῿]+$", "", word)
+    prev = None
+    while word != prev:
+        prev = word
+        word = _PUNCT_BOUNDARY.sub("", word)
+    return word
 
 
-def fetch_morpheus(word: str) -> dict:
-    try:
-        r = requests.get(
-            PERSEUS_MORPH, params={"lang": "greek", "lookup": word}, timeout=10
-        )
-        r.raise_for_status()
-    except requests.RequestException as e:
-        return {"word": word, "error": f"Perseus unreachable: {e}", "analyses": [], "lemmas": [],
-                "links": _links(word), "lemma_links": []}
-    analyses = []
+def _unwrap(node):
+    """Perseids returns either {'$': value} or sometimes a plain string."""
+    if isinstance(node, dict):
+        return node.get("$", "")
+    return node or ""
+
+
+def fetch_perseids(word: str) -> list[dict]:
+    """Query Perseids morphology service. Returns list of analysis dicts."""
+    r = requests.get(
+        PERSEIDS_MORPH,
+        params={"lang": "grc", "engine": "morpheusgrc", "word": word},
+        headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+        timeout=15,
+    )
+    r.raise_for_status()
+    data = r.json()
+    body = data.get("RDF", {}).get("Annotation", {}).get("Body", [])
+    if isinstance(body, dict):
+        body = [body]
+    out = []
+    for b in body:
+        entry = b.get("rest", {}).get("entry", {})
+        d = entry.get("dict", {})
+        lemma = _unwrap(d.get("hdwd"))
+        pos = _unwrap(d.get("pofs"))
+        infls = entry.get("infl", [])
+        if isinstance(infls, dict):
+            infls = [infls]
+        if not infls:
+            out.append({"lemma": lemma, "pos": pos, "form": word})
+            continue
+        for infl in infls:
+            a = {"lemma": lemma, "pos": pos or _unwrap(infl.get("pofs")), "form": word}
+            for k_in, k_out in (
+                ("case", "case"), ("gend", "gender"), ("num", "number"),
+                ("tense", "tense"), ("mood", "mood"), ("voice", "voice"),
+                ("pers", "person"), ("decl", "decl"), ("conj", "conj"),
+                ("dial", "dialect"),
+            ):
+                v = _unwrap(infl.get(k_in))
+                if v:
+                    a[k_out] = v
+            out.append(a)
+    return out
+
+
+def fetch_perseus_xmlmorph(word: str) -> list[dict]:
+    """Fallback: Perseus' classic xmlmorph endpoint."""
+    r = requests.get(
+        PERSEUS_MORPH_FALLBACK,
+        params={"lang": "greek", "lookup": word},
+        headers={"User-Agent": USER_AGENT},
+        timeout=10,
+    )
+    r.raise_for_status()
+    out = []
     try:
         root = ET.fromstring(r.text)
         for analysis in root.findall(".//analysis"):
             entry = {child.tag: (child.text or "").strip() for child in analysis}
-            analyses.append(entry)
+            out.append(entry)
     except ET.ParseError:
         pass
+    return out
+
+
+def fetch_definitions(lemma: str) -> list[str]:
+    """Wiktionary REST: short English glosses for an Ancient Greek lemma."""
+    if not lemma:
+        return []
+    try:
+        r = requests.get(
+            WIKTIONARY_DEF.format(lemma=lemma),
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+            timeout=10,
+        )
+        if not r.ok:
+            return []
+        data = r.json()
+    except (requests.RequestException, ValueError):
+        return []
+
+    # Wiktionary keys language sections by language code or full name.
+    sections = data.get("grc") or data.get("Ancient Greek") or []
+    out = []
+    for sense in sections:
+        for d in sense.get("definitions", []):
+            txt = re.sub(r"<[^>]+>", "", d.get("definition", "")).strip()
+            if txt:
+                out.append(txt)
+            if len(out) >= 4:
+                return out
+    return out
+
+
+def fetch_lookup(word: str) -> dict:
+    errors = []
+    analyses = []
+    try:
+        analyses = fetch_perseids(word)
+    except (requests.RequestException, ValueError) as e:
+        errors.append(f"Perseids: {e}")
+
+    if not analyses:
+        try:
+            analyses = fetch_perseus_xmlmorph(word)
+        except requests.RequestException as e:
+            errors.append(f"Perseus fallback: {e}")
+
     lemmas = sorted({a.get("lemma", "") for a in analyses if a.get("lemma")})
+    definitions = {l: fetch_definitions(l) for l in lemmas}
+
     return {
         "word": word,
         "analyses": analyses,
         "lemmas": lemmas,
+        "definitions": definitions,
+        "errors": errors,
         "links": _links(word),
         "lemma_links": [
             {
                 "lemma": l,
                 "logeion": f"https://logeion.uchicago.edu/{l}",
                 "perseus": f"https://www.perseus.tufts.edu/hopper/text?doc=Perseus%3Atext%3A1999.04.0057%3Aentry%3D{l}",
+                "wiktionary": f"https://en.wiktionary.org/wiki/{l}#Ancient_Greek",
             }
             for l in lemmas
         ],
@@ -385,6 +497,7 @@ def _links(word: str) -> dict:
     return {
         "logeion": f"https://logeion.uchicago.edu/{word}",
         "perseus": f"https://www.perseus.tufts.edu/hopper/morph?l={word}&la=greek",
+        "wiktionary": f"https://en.wiktionary.org/wiki/{word}#Ancient_Greek",
     }
 
 
@@ -394,11 +507,13 @@ def lookup():
     if not raw:
         return jsonify({"error": "empty"}), 400
     word = strip_punct(raw)
+    if not word:
+        return jsonify({"error": "empty after stripping punctuation"}), 400
     cached = _cache_get(word)
     if cached is not None:
         return jsonify({**cached, "cached": True})
-    data = fetch_morpheus(word)
-    if not data.get("error"):
+    data = fetch_lookup(word)
+    if data["analyses"]:
         _cache_put(word, data)
     return jsonify({**data, "cached": False})
 

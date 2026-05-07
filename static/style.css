@@ -78,8 +78,12 @@ header h1 { margin: 0; font-size: 18px; font-weight: 600; }
 
 #lookup-results { font-size: 14px; }
 .analysis { border: 1px solid #e0e0e0; border-radius: 4px; padding: 8px 10px; margin-bottom: 8px; }
-.analysis .lemma { font-size: 18px; font-weight: 600; }
+.analysis .lemma { font-size: 18px; font-weight: 600; font-family: "GFS Didot", "Times New Roman", serif; }
+.analysis .lemma .lemma-link { font-size: 12px; font-weight: normal; margin-left: 6px; color: #0366d6; font-family: -apple-system, sans-serif; }
 .analysis .grammar { color: #555; font-size: 13px; margin-top: 2px; }
+.analysis .defs { margin: 6px 0 6px 20px; padding: 0; font-size: 14px; color: #222; }
+.analysis .defs li { margin: 2px 0; }
+.analysis .no-def { color: #999; font-size: 12px; margin: 4px 0; font-style: italic; }
 .lookup-header { margin-bottom: 8px; font-size: 13px; color: #666; }
 .lookup-header a { color: #0366d6; margin-right: 8px; }
 .lookup-header .badge { background: #d4edda; color: #155724; padding: 1px 6px; border-radius: 8px; font-size: 11px; margin-left: 6px; }

@@ -296,11 +296,14 @@ function renderLookup(data) {
   let html = `<div class="lookup-header">
     <b>${escapeHtml(data.word)}</b>${data.cached ? '<span class="badge">cached</span>' : ''} &mdash;
     <a href="${data.links.logeion}" target="_blank">Logeion</a>
+    <a href="${data.links.wiktionary}" target="_blank">Wiktionary</a>
     <a href="${data.links.perseus}" target="_blank">Perseus morph</a>
   </div>`;
-  if (data.error) html += `<div class="error">${escapeHtml(data.error)}</div>`;
+  if (data.errors?.length) {
+    html += `<div class="error">${data.errors.map(escapeHtml).join("<br>")}</div>`;
+  }
   if (!data.analyses?.length) {
-    html += `<div class="error">No morphological analyses returned. Try Logeion (link above) for the headword.</div>`;
+    html += `<div class="error">No morphological analyses returned. Try Logeion or Wiktionary (links above) for the headword. If many lookups are failing, the upstream service may be down.</div>`;
   } else {
     const byLemma = {};
     for (const a of data.analyses) {
@@ -309,15 +312,22 @@ function renderLookup(data) {
     }
     for (const [lemma, list] of Object.entries(byLemma)) {
       const lemmaLink = data.lemma_links.find(l => l.lemma === lemma);
+      const defs = data.definitions?.[lemma] || [];
       html += `<div class="analysis">
         <div class="lemma">${escapeHtml(lemma)}
-          ${lemmaLink ? `<a href="${lemmaLink.logeion}" target="_blank" style="font-size:13px;font-weight:normal;">Logeion ↗</a>
-          <a href="${lemmaLink.perseus}" target="_blank" style="font-size:13px;font-weight:normal;">LSJ ↗</a>` : ""}
+          ${lemmaLink ? `<a href="${lemmaLink.wiktionary}" target="_blank" class="lemma-link">Wikt ↗</a>
+          <a href="${lemmaLink.logeion}" target="_blank" class="lemma-link">Logeion ↗</a>
+          <a href="${lemmaLink.perseus}" target="_blank" class="lemma-link">LSJ ↗</a>` : ""}
         </div>`;
+      if (defs.length) {
+        html += `<ol class="defs">${defs.map(d => `<li>${escapeHtml(d)}</li>`).join("")}</ol>`;
+      } else {
+        html += `<div class="no-def">No short definition available — see external links above.</div>`;
+      }
       for (const a of list) {
-        const parts = ["pos","person","number","tense","mood","voice","gender","case","degree","dialect","feature"]
+        const parts = ["pos","person","number","tense","mood","voice","gender","case","degree","dialect","feature","decl","conj"]
           .map(k => a[k]).filter(Boolean).join(" · ");
-        html += `<div class="grammar">${escapeHtml(a.form || "")} — ${escapeHtml(parts)}</div>`;
+        if (parts) html += `<div class="grammar">${escapeHtml(a.form || "")} — ${escapeHtml(parts)}</div>`;
       }
       html += `</div>`;
     }
