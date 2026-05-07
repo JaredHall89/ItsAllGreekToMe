@@ -1,0 +1,94 @@
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  display: flex; flex-direction: column;
+  background: #f4f1ea; color: #222;
+}
+header {
+  padding: 8px 16px; background: #2c3e50; color: #ecf0f1;
+  display: flex; align-items: center; gap: 12px;
+}
+header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+.project-controls { display: flex; gap: 8px; align-items: center; flex: 1; }
+.project-controls select, .project-controls button {
+  font: inherit; padding: 4px 8px; border-radius: 4px; border: 1px solid #555;
+  background: #34495e; color: #ecf0f1; cursor: pointer;
+}
+.project-controls select { min-width: 220px; }
+#status { margin-left: auto; font-size: 12px; opacity: 0.7; }
+
+.three-pane {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 1px;
+  flex: 1;
+  min-height: 0;
+  background: #ccc;
+}
+.pane {
+  background: #fff;
+  display: flex; flex-direction: column;
+  min-height: 0; min-width: 0;
+}
+.pane h2 {
+  margin: 0; padding: 8px 12px;
+  font-size: 13px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: #555;
+  background: #efeae0; border-bottom: 1px solid #ddd;
+}
+.pane h2 .hint { font-weight: normal; text-transform: none; letter-spacing: 0; opacity: 0.6; margin-left: 8px; }
+.scroll { flex: 1; overflow: auto; padding: 12px; min-height: 0; }
+
+/* original text pane */
+#original-lines {
+  font-family: "GFS Didot", "Times New Roman", "Cardo", "EB Garamond", serif;
+  font-size: 17px; line-height: 1.7;
+}
+.line {
+  display: grid; grid-template-columns: 48px 1fr; gap: 8px;
+  padding: 2px 4px; border-radius: 3px; cursor: pointer;
+}
+.line:hover { background: #f9f5ec; }
+.line.current { background: #fff3c4; }
+.line .lineno { color: #999; text-align: right; font-size: 12px; user-select: none; padding-top: 4px; }
+.line .text .word { cursor: pointer; padding: 0 1px; border-radius: 2px; }
+.line .text .word:hover { background: #d0e6ff; }
+
+/* dictionary */
+#lookup-form { display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid #eee; }
+#lookup-form input { flex: 1; padding: 6px 8px; font: inherit; border: 1px solid #bbb; border-radius: 4px; }
+#lookup-form button { padding: 6px 12px; }
+#lookup-results { font-size: 14px; }
+.analysis { border: 1px solid #e0e0e0; border-radius: 4px; padding: 8px 10px; margin-bottom: 8px; }
+.analysis .lemma { font-size: 18px; font-weight: 600; }
+.analysis .grammar { color: #555; font-size: 13px; margin-top: 2px; }
+.lookup-header { margin-bottom: 8px; font-size: 13px; color: #666; }
+.lookup-header a { color: #0366d6; margin-right: 8px; }
+.error { color: #b00020; font-size: 13px; }
+
+/* translation pane */
+#translation-lines .tline {
+  display: grid; grid-template-columns: 48px 1fr; gap: 8px;
+  padding: 4px 0; border-bottom: 1px dashed #eee;
+}
+#translation-lines .tline.current { background: #fffbe6; }
+#translation-lines .lineno { color: #999; text-align: right; font-size: 12px; padding-top: 6px; }
+#translation-lines .editor { display: flex; flex-direction: column; gap: 4px; }
+#translation-lines textarea {
+  width: 100%; resize: vertical; min-height: 28px;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  padding: 4px 6px; border: 1px solid #ddd; border-radius: 3px;
+}
+#translation-lines textarea.notes {
+  font-size: 12px; color: #666; background: #fafafa; min-height: 0;
+}
+#translation-lines textarea:focus { outline: 2px solid #ffd700; border-color: transparent; }
+
+/* dialog */
+dialog { border: none; border-radius: 8px; padding: 20px; max-width: 500px; width: 90%; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }
+dialog h3 { margin-top: 0; }
+dialog label { display: block; margin: 8px 0; }
+dialog input[type=text], dialog textarea, dialog input[type=file] { width: 100%; padding: 6px; font: inherit; }
+dialog menu { display: flex; gap: 8px; justify-content: flex-end; margin: 16px 0 0; padding: 0; }
+dialog button { padding: 6px 16px; font: inherit; cursor: pointer; }

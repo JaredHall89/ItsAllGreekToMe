@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>It's All Greek To Me</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>It's All Greek To Me</h1>
+  <div class="project-controls">
+    <select id="project-select"><option value="">— select project —</option></select>
+    <button id="new-project-btn">New project…</button>
+    <button id="delete-project-btn" title="Delete current project">🗑</button>
+    <button id="export-btn" title="Export JSON">⬇ Export</button>
+    <span id="status"></span>
+  </div>
+</header>
+
+<main id="workspace" class="three-pane">
+  <section class="pane" id="pane-original">
+    <h2>Original Text <span class="hint">(click a word to look it up)</span></h2>
+    <div id="original-lines" class="scroll"></div>
+  </section>
+
+  <section class="pane" id="pane-dict">
+    <h2>Dictionary</h2>
+    <form id="lookup-form">
+      <input type="text" id="lookup-input" placeholder="Greek word (Unicode or beta code)" autocomplete="off">
+      <button type="submit">Look up</button>
+    </form>
+    <div id="lookup-results" class="scroll"></div>
+  </section>
+
+  <section class="pane" id="pane-translation">
+    <h2>Translation</h2>
+    <div id="translation-lines" class="scroll"></div>
+  </section>
+</main>
+
+<dialog id="new-project-dialog">
+  <form method="dialog" id="new-project-form">
+    <h3>New project</h3>
+    <label>Name <input type="text" name="name" required></label>
+    <label>Upload file (.txt or .pdf)
+      <input type="file" name="file" accept=".txt,.pdf,text/plain,application/pdf">
+    </label>
+    <label><input type="checkbox" name="ocr" value="1"> Force OCR (for scanned PDFs; requires tesseract + grc)</label>
+    <details>
+      <summary>…or paste text directly</summary>
+      <textarea name="pasted_text" rows="8" placeholder="Paste UTF-8 Greek text, one line per verse"></textarea>
+    </details>
+    <menu>
+      <button value="cancel">Cancel</button>
+      <button id="create-btn" value="create">Create</button>
+    </menu>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
