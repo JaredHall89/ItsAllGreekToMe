@@ -1,3 +1,4 @@
+import hmac
 import io
 import os
 import re
@@ -8,21 +9,43 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import requests
-from flask import Flask, g, jsonify, render_template, request
+from flask import Flask, Response, g, jsonify, render_template, request
 
 ROOT = Path(__file__).parent
-DB_PATH = ROOT / "data" / "greek.db"
-DB_PATH.parent.mkdir(exist_ok=True)
+DATA_DIR = Path(os.environ.get("DATA_DIR") or (ROOT / "data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DATA_DIR / "greek.db"
+LSJ_DB_PATH = DATA_DIR / "lsj.sqlite"
 
 PERSEIDS_MORPH = "https://services.perseids.org/bsp/morphologyservice/analysis/word"
 PERSEUS_MORPH_FALLBACK = "https://www.perseus.tufts.edu/hopper/xmlmorph"
 WIKTIONARY_API = "https://en.wiktionary.org/w/api.php"
-LSJ_DB_PATH = ROOT / "data" / "lsj.sqlite"
 LOOKUP_TTL = 60 * 60 * 24  # 24h
 LOOKUP_MAX_ENTRIES = 5000
 USER_AGENT = "ItsAllGreekToMe/0.1 (greek translation workbench)"
 
 app = Flask(__name__)
+
+
+@app.before_request
+def _require_basic_auth():
+    user = os.environ.get("BASIC_AUTH_USER")
+    password = os.environ.get("BASIC_AUTH_PASS")
+    if not user or not password:
+        return None  # auth disabled (local dev)
+    auth = request.authorization
+    ok = (
+        auth is not None
+        and hmac.compare_digest(auth.username or "", user)
+        and hmac.compare_digest(auth.password or "", password)
+    )
+    if not ok:
+        return Response(
+            "Authentication required.",
+            401,
+            {"WWW-Authenticate": 'Basic realm="It\'s All Greek To Me"'},
+        )
+    return None
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 

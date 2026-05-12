@@ -23,9 +23,10 @@ except ImportError:
     print("  pip install -r requirements.txt")
     sys.exit(1)
 
+import os
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR = Path(os.environ.get("DATA_DIR") or (ROOT / "data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "lsj.sqlite"
 TMP_DIR = DATA_DIR / "_lsj_tmp"
 TMP_DIR.mkdir(exist_ok=True)
