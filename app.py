@@ -43,7 +43,7 @@ def _require_basic_auth():
         return Response(
             "Authentication required.",
             401,
-            {"WWW-Authenticate": 'Basic realm="It\'s All Greek To Me"'},
+            {"WWW-Authenticate": 'Basic realm="My Translation Buddy"'},
         )
     return None
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
